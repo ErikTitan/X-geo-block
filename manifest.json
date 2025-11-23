@@ -5,8 +5,13 @@
   "description": "Shows country flag emoji next to Twitter usernames based on account location",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "tabs"
   ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Twitter Location Flag"
+  },
   "host_permissions": [
     "https://x.com/*",
     "https://twitter.com/*"

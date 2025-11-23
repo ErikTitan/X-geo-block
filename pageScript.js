@@ -120,7 +120,17 @@
         let location = null;
         if (response.ok) {
           const data = await response.json();
+          console.log(`API response for ${screenName}:`, data);
           location = data?.data?.user_result_by_screen_name?.result?.about_profile?.account_based_in || null;
+          console.log(`Extracted location for ${screenName}:`, location);
+          
+          // Debug: log the full path to see what's available
+          if (!location && data?.data?.user_result_by_screen_name?.result) {
+            console.log('User result available but no location:', {
+              hasAboutProfile: !!data.data.user_result_by_screen_name.result.about_profile,
+              aboutProfile: data.data.user_result_by_screen_name.result.about_profile
+            });
+          }
         } else {
           const errorText = await response.text().catch(() => '');
           
@@ -147,7 +157,7 @@
               }, '*');
             }
           } else {
-            console.log('Twitter API error:', response.status, response.statusText);
+            console.log(`Twitter API error for ${screenName}:`, response.status, response.statusText, errorText.substring(0, 200));
           }
         }
         

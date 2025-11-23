@@ -15,6 +15,41 @@ let rateLimitResetTime = 0; // Unix timestamp when rate limit resets
 // Observer for dynamically loaded content
 let observer = null;
 
+// Extension enabled state
+let extensionEnabled = true;
+const TOGGLE_KEY = 'extension_enabled';
+const DEFAULT_ENABLED = true;
+
+// Load enabled state
+async function loadEnabledState() {
+  try {
+    const result = await chrome.storage.local.get([TOGGLE_KEY]);
+    extensionEnabled = result[TOGGLE_KEY] !== undefined ? result[TOGGLE_KEY] : DEFAULT_ENABLED;
+    console.log('Extension enabled:', extensionEnabled);
+  } catch (error) {
+    console.error('Error loading enabled state:', error);
+    extensionEnabled = DEFAULT_ENABLED;
+  }
+}
+
+// Listen for toggle changes from popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.type === 'extensionToggle') {
+    extensionEnabled = request.enabled;
+    console.log('Extension toggled:', extensionEnabled);
+    
+    if (extensionEnabled) {
+      // Re-initialize if enabled
+      setTimeout(() => {
+        processUsernames();
+      }, 500);
+    } else {
+      // Remove all flags if disabled
+      removeAllFlags();
+    }
+  }
+});
+
 // Load cache from persistent storage
 async function loadCache() {
   try {
@@ -23,13 +58,13 @@ async function loadCache() {
       const cached = result[CACHE_KEY];
       const now = Date.now();
       
-      // Filter out expired entries
+      // Filter out expired entries and null entries (allow retry)
       for (const [username, data] of Object.entries(cached)) {
-        if (data.expiry && data.expiry > now) {
+        if (data.expiry && data.expiry > now && data.location !== null) {
           locationCache.set(username, data.location);
         }
       }
-      console.log(`Loaded ${locationCache.size} cached locations`);
+      console.log(`Loaded ${locationCache.size} cached locations (excluding null entries)`);
     }
   } catch (error) {
     console.error('Error loading cache:', error);
@@ -188,9 +223,18 @@ async function getUserLocation(screenName) {
   // Check cache first
   if (locationCache.has(screenName)) {
     const cached = locationCache.get(screenName);
-    return cached;
+    // Don't return cached null - retry if it was null before (might have been rate limited)
+    if (cached !== null) {
+      console.log(`Using cached location for ${screenName}: ${cached}`);
+      return cached;
+    } else {
+      console.log(`Found null in cache for ${screenName}, will retry API call`);
+      // Remove from cache to allow retry
+      locationCache.delete(screenName);
+    }
   }
   
+  console.log(`Queueing API request for ${screenName}`);
   // Queue the request
   return new Promise((resolve, reject) => {
     requestQueue.push({ screenName, resolve, reject });
@@ -200,50 +244,101 @@ async function getUserLocation(screenName) {
 
 // Function to extract username from various Twitter UI elements
 function extractUsername(element) {
-  // Try data-testid="UserName" first (most reliable)
-  const usernameElement = element.querySelector('[data-testid="UserName"]');
+  // Try data-testid="UserName" or "User-Name" first (most reliable)
+  const usernameElement = element.querySelector('[data-testid="UserName"], [data-testid="User-Name"]');
   if (usernameElement) {
     const links = usernameElement.querySelectorAll('a[href^="/"]');
     for (const link of links) {
       const href = link.getAttribute('href');
       const match = href.match(/^\/([^\/\?]+)/);
-      if (match && match[1] && 
-          match[1] !== 'home' && 
-          match[1] !== 'explore' && 
-          match[1] !== 'notifications' && 
-          match[1] !== 'messages' &&
-          match[1] !== 'i' &&
-          match[1] !== 'compose' &&
-          match[1] !== 'search' &&
-          !match[1].startsWith('hashtag')) {
-        return match[1];
+      if (match && match[1]) {
+        const username = match[1];
+        // Filter out common routes
+        const excludedRoutes = ['home', 'explore', 'notifications', 'messages', 'i', 'compose', 'search', 'settings', 'bookmarks', 'lists', 'communities'];
+        if (!excludedRoutes.includes(username) && 
+            !username.startsWith('hashtag') &&
+            !username.startsWith('search') &&
+            username.length > 0 &&
+            username.length < 20) { // Usernames are typically short
+          return username;
+        }
       }
     }
   }
   
-  // Try finding username links in the element
-  const usernameLinks = element.querySelectorAll('a[href^="/"]');
-  for (const link of usernameLinks) {
+  // Try finding username links in the entire element (broader search)
+  const allLinks = element.querySelectorAll('a[href^="/"]');
+  const seenUsernames = new Set();
+  
+  for (const link of allLinks) {
     const href = link.getAttribute('href');
+    if (!href) continue;
+    
     const match = href.match(/^\/([^\/\?]+)/);
-    if (match && match[1] && 
-        match[1] !== 'home' && 
-        match[1] !== 'explore' && 
-        match[1] !== 'notifications' && 
-        match[1] !== 'messages' &&
-        match[1] !== 'i' &&
-        match[1] !== 'compose' &&
-        match[1] !== 'search' &&
-        !match[1].startsWith('hashtag') &&
-        !match[1].includes('status')) {
-      // Check if this looks like a username (not a route)
-      const text = link.textContent?.trim();
-      if (text && text.startsWith('@')) {
-        return match[1];
+    if (!match || !match[1]) continue;
+    
+    const potentialUsername = match[1];
+    
+    // Skip if we've already checked this username
+    if (seenUsernames.has(potentialUsername)) continue;
+    seenUsernames.add(potentialUsername);
+    
+    // Filter out routes and invalid usernames
+    const excludedRoutes = ['home', 'explore', 'notifications', 'messages', 'i', 'compose', 'search', 'settings', 'bookmarks', 'lists', 'communities', 'hashtag'];
+    if (excludedRoutes.some(route => potentialUsername === route || potentialUsername.startsWith(route))) {
+      continue;
+    }
+    
+    // Skip status/tweet links
+    if (potentialUsername.includes('status') || potentialUsername.match(/^\d+$/)) {
+      continue;
+    }
+    
+    // Check link text/content for username indicators
+    const text = link.textContent?.trim() || '';
+    const linkText = text.toLowerCase();
+    const usernameLower = potentialUsername.toLowerCase();
+    
+    // If link text starts with @, it's definitely a username
+    if (text.startsWith('@')) {
+      return potentialUsername;
+    }
+    
+    // If link text matches the username (without @), it's likely a username
+    if (linkText === usernameLower || linkText === `@${usernameLower}`) {
+      return potentialUsername;
+    }
+    
+    // Check if link is in a UserName container or has username-like structure
+    const parent = link.closest('[data-testid="UserName"], [data-testid="User-Name"]');
+    if (parent) {
+      // If it's in a UserName container and looks like a username, return it
+      if (potentialUsername.length > 0 && potentialUsername.length < 20 && !potentialUsername.includes('/')) {
+        return potentialUsername;
       }
-      // If link text matches the href, it's likely a username
-      if (text && text.toLowerCase() === match[1].toLowerCase()) {
-        return match[1];
+    }
+    
+    // Also check if link text is @username format
+    if (text && text.trim().startsWith('@')) {
+      const atUsername = text.trim().substring(1);
+      if (atUsername === potentialUsername) {
+        return potentialUsername;
+      }
+    }
+  }
+  
+  // Last resort: look for @username pattern in text content and verify with link
+  const textContent = element.textContent || '';
+  const atMentionMatches = textContent.matchAll(/@([a-zA-Z0-9_]+)/g);
+  for (const match of atMentionMatches) {
+    const username = match[1];
+    // Verify it's actually a link in a User-Name container
+    const link = element.querySelector(`a[href="/${username}"], a[href^="/${username}?"]`);
+    if (link) {
+      // Make sure it's in a username context, not just mentioned in tweet text
+      const isInUserNameContainer = link.closest('[data-testid="UserName"], [data-testid="User-Name"]');
+      if (isInUserNameContainer) {
+        return username;
       }
     }
   }
@@ -260,10 +355,13 @@ async function addFlagToUsername(usernameElement, screenName) {
 
   // Mark as processing to avoid duplicate requests
   usernameElement.dataset.flagAdded = 'processing';
+  console.log(`Processing flag for ${screenName}...`);
 
   // Get location
   const location = await getUserLocation(screenName);
+  console.log(`Location for ${screenName}:`, location);
   if (!location) {
+    console.log(`No location found for ${screenName}, marking as failed`);
     usernameElement.dataset.flagAdded = 'failed';
     return;
   }
@@ -275,48 +373,89 @@ async function addFlagToUsername(usernameElement, screenName) {
     usernameElement.dataset.flagAdded = 'failed';
     return;
   }
+  
+  console.log(`Found flag ${flag} for ${screenName} (${location})`);
 
   // Find the username link - try multiple strategies
+  // Priority: Find the @username link, not the display name link
   let usernameLink = null;
   
-  // Strategy 1: Find link with matching href
-  const links = usernameElement.querySelectorAll('a[href^="/"]');
-  for (const link of links) {
-    const href = link.getAttribute('href');
-    if (href === `/${screenName}` || href.startsWith(`/${screenName}?`)) {
-      usernameLink = link;
-      break;
-    }
-  }
-  
-  // Strategy 2: Find link in UserName container
-  if (!usernameLink) {
-    const userNameContainer = usernameElement.querySelector('[data-testid="UserName"]');
-    if (userNameContainer) {
-      usernameLink = userNameContainer.querySelector(`a[href="/${screenName}"], a[href^="/${screenName}?"]`);
-    }
-  }
-  
-  // Strategy 3: First link that matches
-  if (!usernameLink && links.length > 0) {
-    for (const link of links) {
+  // Strategy 1: Find link with @username text content (most reliable - this is the actual handle)
+  const userNameContainer = usernameElement.querySelector('[data-testid="UserName"], [data-testid="User-Name"]');
+  if (userNameContainer) {
+    const containerLinks = userNameContainer.querySelectorAll('a[href^="/"]');
+    for (const link of containerLinks) {
+      const text = link.textContent?.trim();
       const href = link.getAttribute('href');
       const match = href.match(/^\/([^\/\?]+)/);
+      
+      // Prioritize links that have @username as text
       if (match && match[1] === screenName) {
+        if (text === `@${screenName}` || text === screenName) {
+          usernameLink = link;
+          break;
+        }
+      }
+    }
+  }
+  
+  // Strategy 2: Find any link with @username text in UserName container
+  if (!usernameLink && userNameContainer) {
+    const containerLinks = userNameContainer.querySelectorAll('a[href^="/"]');
+    for (const link of containerLinks) {
+      const text = link.textContent?.trim();
+      if (text === `@${screenName}`) {
         usernameLink = link;
         break;
       }
     }
   }
+  
+  // Strategy 3: Find link with exact matching href that has @username text anywhere in element
+  if (!usernameLink) {
+    const links = usernameElement.querySelectorAll('a[href^="/"]');
+    for (const link of links) {
+      const href = link.getAttribute('href');
+      const text = link.textContent?.trim();
+      if ((href === `/${screenName}` || href.startsWith(`/${screenName}?`)) && 
+          (text === `@${screenName}` || text === screenName)) {
+        usernameLink = link;
+        break;
+      }
+    }
+  }
+  
+  // Strategy 4: Fallback to any matching href (but prefer ones not in display name area)
+  if (!usernameLink) {
+    const links = usernameElement.querySelectorAll('a[href^="/"]');
+    for (const link of links) {
+      const href = link.getAttribute('href');
+      const match = href.match(/^\/([^\/\?]+)/);
+      if (match && match[1] === screenName) {
+        // Skip if this looks like a display name link (has verification badge nearby)
+        const hasVerificationBadge = link.closest('[data-testid="User-Name"]')?.querySelector('[data-testid="icon-verified"]');
+        if (!hasVerificationBadge || link.textContent?.trim() === `@${screenName}`) {
+          usernameLink = link;
+          break;
+        }
+      }
+    }
+  }
 
   if (!usernameLink) {
-    console.log(`Could not find username link for ${screenName}`);
+    console.error(`Could not find username link for ${screenName}`);
+    console.error('Available links in container:', Array.from(usernameElement.querySelectorAll('a[href^="/"]')).map(l => ({
+      href: l.getAttribute('href'),
+      text: l.textContent?.trim()
+    })));
     usernameElement.dataset.flagAdded = 'failed';
     return;
   }
+  
+  console.log(`Found username link for ${screenName}:`, usernameLink.href, usernameLink.textContent?.trim());
 
-  // Check if flag already exists
-  const existingFlag = usernameLink.parentElement?.querySelector('[data-twitter-flag]');
+  // Check if flag already exists (check in the entire container, not just parent)
+  const existingFlag = usernameElement.querySelector('[data-twitter-flag]');
   if (existingFlag) {
     usernameElement.dataset.flagAdded = 'true';
     return;
@@ -328,38 +467,150 @@ async function addFlagToUsername(usernameElement, screenName) {
   flagSpan.setAttribute('data-twitter-flag', 'true');
   flagSpan.style.marginLeft = '4px';
   flagSpan.style.display = 'inline';
+  flagSpan.style.color = 'inherit'; // Inherit color from parent
   
-  // Insert flag after username link
+  // Try to insert flag after username link
+  // Twitter wraps the @username link in a div, so we need to insert after that div
+  let inserted = false;
+  
+  // Strategy 1: Insert after the parent div of the @username link
+  // The @username link is typically in a div that comes after the display name
   if (usernameLink.parentNode) {
-    usernameLink.parentNode.insertBefore(flagSpan, usernameLink.nextSibling);
-  } else {
-    // Fallback: append to username link itself
-    usernameLink.appendChild(flagSpan);
+    try {
+      // Insert right after the parent div
+      usernameLink.parentNode.parentNode?.insertBefore(flagSpan, usernameLink.parentNode.nextSibling);
+      if (flagSpan.parentNode) {
+        inserted = true;
+      }
+    } catch (e) {
+      console.log('Failed to insert after parent div:', e);
+    }
   }
   
-  // Mark as processed
-  usernameElement.dataset.flagAdded = 'true';
-  console.log(`Added flag ${flag} for ${screenName} (${location})`);
+  // Strategy 2: Insert right after the link in its immediate parent
+  if (!inserted && usernameLink.parentNode) {
+    try {
+      usernameLink.parentNode.insertBefore(flagSpan, usernameLink.nextSibling);
+      if (flagSpan.parentNode) {
+        inserted = true;
+      }
+    } catch (e) {
+      console.log('Failed to insert after link:', e);
+    }
+  }
+  
+  // Strategy 3: Find the container div that holds both name and handle, insert after handle div
+  if (!inserted) {
+    const userNameContainer = usernameLink.closest('[data-testid="UserName"], [data-testid="User-Name"]');
+    if (userNameContainer) {
+      // Find the div that contains the @username link
+      const handleDiv = usernameLink.closest('div');
+      if (handleDiv && handleDiv.parentNode) {
+        try {
+          handleDiv.parentNode.insertBefore(flagSpan, handleDiv.nextSibling);
+          if (flagSpan.parentNode) {
+            inserted = true;
+          }
+        } catch (e) {
+          console.log('Failed to insert after handle div:', e);
+        }
+      }
+    }
+  }
+  
+  // Strategy 4: Insert at end of User-Name container (fallback)
+  if (!inserted) {
+    const userNameContainer = usernameLink.closest('[data-testid="UserName"], [data-testid="User-Name"]');
+    if (userNameContainer) {
+      try {
+        userNameContainer.appendChild(flagSpan);
+        inserted = true;
+      } catch (e) {
+        console.log('Failed to append to UserName container:', e);
+      }
+    }
+  }
+  
+  // Strategy 5: Append to the link itself (last resort)
+  if (!inserted) {
+    try {
+      usernameLink.appendChild(flagSpan);
+      inserted = true;
+    } catch (e) {
+      console.error('Failed to append flag to link:', e);
+    }
+  }
+  
+  if (inserted) {
+    // Mark as processed
+    usernameElement.dataset.flagAdded = 'true';
+    console.log(`✓ Successfully added flag ${flag} for ${screenName} (${location})`);
+  } else {
+    console.error(`✗ Failed to insert flag for ${screenName} - tried all strategies`);
+    console.error('Username link:', usernameLink);
+    console.error('Parent structure:', usernameLink.parentNode);
+    usernameElement.dataset.flagAdded = 'failed';
+  }
+}
+
+// Function to remove all flags (when extension is disabled)
+function removeAllFlags() {
+  const flags = document.querySelectorAll('[data-twitter-flag]');
+  flags.forEach(flag => flag.remove());
+  
+  // Reset flag added markers
+  const containers = document.querySelectorAll('[data-flag-added]');
+  containers.forEach(container => {
+    delete container.dataset.flagAdded;
+  });
+  
+  console.log('Removed all flags');
 }
 
 // Function to process all username elements on the page
 async function processUsernames() {
+  // Check if extension is enabled
+  if (!extensionEnabled) {
+    return;
+  }
+  
   // Find all tweet/article containers and user cells
   const containers = document.querySelectorAll('article[data-testid="tweet"], [data-testid="UserCell"], [data-testid="User-Names"], [data-testid="User-Name"]');
   
   console.log(`Processing ${containers.length} containers for usernames`);
   
+  let foundCount = 0;
+  let processedCount = 0;
+  let skippedCount = 0;
+  
   for (const container of containers) {
     const screenName = extractUsername(container);
     if (screenName) {
+      foundCount++;
       const status = container.dataset.flagAdded;
       if (!status || status === 'failed') {
+        processedCount++;
         // Process in parallel but limit concurrency
         addFlagToUsername(container, screenName).catch(err => {
           console.error(`Error processing ${screenName}:`, err);
+          container.dataset.flagAdded = 'failed';
         });
+      } else {
+        skippedCount++;
+      }
+    } else {
+      // Debug: log containers that don't have usernames
+      const hasUserName = container.querySelector('[data-testid="UserName"], [data-testid="User-Name"]');
+      if (hasUserName) {
+        console.log('Found UserName container but no username extracted');
       }
     }
+  }
+  
+  if (foundCount > 0) {
+    console.log(`Found ${foundCount} usernames, processing ${processedCount} new ones, skipped ${skippedCount} already processed`);
+  } else {
+    console.log('No usernames found in containers');
   }
 }
 
@@ -370,6 +621,11 @@ function initObserver() {
   }
 
   observer = new MutationObserver((mutations) => {
+    // Don't process if extension is disabled
+    if (!extensionEnabled) {
+      return;
+    }
+    
     let shouldProcess = false;
     for (const mutation of mutations) {
       if (mutation.addedNodes.length > 0) {
@@ -394,8 +650,17 @@ function initObserver() {
 async function init() {
   console.log('Twitter Location Flag extension initialized');
   
-  // Load persistent cache first
+  // Load enabled state first
+  await loadEnabledState();
+  
+  // Load persistent cache
   await loadCache();
+  
+  // Only proceed if extension is enabled
+  if (!extensionEnabled) {
+    console.log('Extension is disabled');
+    return;
+  }
   
   // Inject page script
   injectPageScript();

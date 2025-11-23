@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 250px;
+      padding: 16px;
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .toggle-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px;
+      background: #f7f9f9;
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+    .toggle-label {
+      font-weight: 500;
+      color: #0f1419;
+    }
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background: #ccd6dd;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle-switch.enabled {
+      background: #1d9bf0;
+    }
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: white;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .toggle-switch.enabled::after {
+      transform: translateX(20px);
+    }
+    .status {
+      font-size: 12px;
+      color: #536471;
+      margin-top: 8px;
+      text-align: center;
+    }
+    .info {
+      font-size: 12px;
+      color: #536471;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #eff3f4;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Twitter Location Flag</h1>
+  </div>
+  
+  <div class="toggle-container">
+    <span class="toggle-label">Enable Extension</span>
+    <div class="toggle-switch" id="toggleSwitch"></div>
+  </div>
+  
+  <div class="status" id="status">Loading...</div>
+  
+  <div class="info">
+    Shows country flags next to Twitter usernames based on account location.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
+
