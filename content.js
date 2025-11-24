@@ -19,6 +19,8 @@ let observer = null;
 let extensionEnabled = true;
 const TOGGLE_KEY = 'extension_enabled';
 const DEFAULT_ENABLED = true;
+const BLACKLIST_KEY = 'blocked_countries';
+let blockedCountries = [];
 
 // Track usernames currently being processed to avoid duplicate requests
 const processingUsernames = new Set();
@@ -26,12 +28,15 @@ const processingUsernames = new Set();
 // Load enabled state
 async function loadEnabledState() {
   try {
-    const result = await chrome.storage.local.get([TOGGLE_KEY]);
+    const result = await chrome.storage.local.get([TOGGLE_KEY, BLACKLIST_KEY]);
     extensionEnabled = result[TOGGLE_KEY] !== undefined ? result[TOGGLE_KEY] : DEFAULT_ENABLED;
+    blockedCountries = result[BLACKLIST_KEY] || [];
     console.log('Extension enabled:', extensionEnabled);
+    console.log('Blocked countries:', blockedCountries);
   } catch (error) {
     console.error('Error loading enabled state:', error);
     extensionEnabled = DEFAULT_ENABLED;
+    blockedCountries = [];
   }
 }
 
@@ -50,6 +55,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // Remove all flags if disabled
       removeAllFlags();
     }
+  }
+});
+
+// Listen for blacklist changes
+chrome.storage.onChanged.addListener((changes, namespace) => {
+  if (namespace === 'local' && changes[BLACKLIST_KEY]) {
+    blockedCountries = changes[BLACKLIST_KEY].newValue || [];
+    console.log('Blacklist updated:', blockedCountries);
+    // Reprocess usernames to apply new rules (simple way: processUsernames)
+    // Note: This won't unhide already hidden posts easily, but will hide new matches
+    processUsernames();
   }
 });
 
@@ -505,6 +521,59 @@ async function addFlagToUsername(usernameElement, screenName) {
       console.log(`No location found for ${screenName}, marking as failed`);
       usernameElement.dataset.flagAdded = 'failed';
       return;
+    }
+
+    // Check against blacklist
+    const locationLower = location.toLowerCase();
+    const isBlocked = blockedCountries.some(country =>
+      locationLower.includes(country.toLowerCase())
+    );
+
+    if (isBlocked) {
+      console.log(`Blocking post from ${screenName} (${location})`);
+      
+      // Find the tweet container
+      const tweetContainer = usernameElement.closest('article[data-testid="tweet"]');
+      if (tweetContainer) {
+        // Hide children instead of clearing
+        const children = Array.from(tweetContainer.children);
+        children.forEach(child => child.style.display = 'none');
+        
+        const messageContainer = document.createElement('div');
+        messageContainer.style.cssText = 'padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: transparent; border-bottom: 1px solid rgb(47, 51, 54); color: rgb(113, 118, 123); font-size: 15px;';
+        
+        const textSpan = document.createElement('span');
+        textSpan.textContent = `Post hidden because account is from ${location}`;
+        
+        const showButton = document.createElement('button');
+        showButton.textContent = 'Show';
+        showButton.style.cssText = 'background-color: transparent; border: 1px solid rgb(83, 100, 113); color: rgb(29, 155, 240); font-weight: 700; border-radius: 9999px; padding: 4px 12px; cursor: pointer; font-size: 14px; transition: background-color 0.2s;';
+        
+        showButton.onmouseover = () => showButton.style.backgroundColor = 'rgba(29, 155, 240, 0.1)';
+        showButton.onmouseout = () => showButton.style.backgroundColor = 'transparent';
+        
+        showButton.onclick = (e) => {
+            e.stopPropagation(); // Prevent clicking the tweet
+            messageContainer.remove();
+            children.forEach(child => child.style.display = '');
+        };
+        
+        messageContainer.appendChild(textSpan);
+        messageContainer.appendChild(showButton);
+        
+        tweetContainer.appendChild(messageContainer);
+        
+        // Mark as blocked to avoid re-processing
+        usernameElement.dataset.flagAdded = 'blocked';
+        
+        // Remove shimmer if it was inserted
+        if (shimmerInserted && shimmerSpan.parentNode) {
+          shimmerSpan.remove();
+        }
+        return;
+      } else {
+        console.log('Could not find tweet container to hide');
+      }
     }
 
   // Get flag emoji

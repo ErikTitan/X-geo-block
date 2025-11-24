@@ -5,11 +5,37 @@ const DEFAULT_ENABLED = true;
 // Get toggle element
 const toggleSwitch = document.getElementById('toggleSwitch');
 const status = document.getElementById('status');
+const blacklistInput = document.getElementById('blacklist');
+const saveButton = document.getElementById('saveButton');
+const saveStatus = document.getElementById('saveStatus');
+
+const BLACKLIST_KEY = 'blocked_countries';
 
 // Load current state
-chrome.storage.local.get([TOGGLE_KEY], (result) => {
+chrome.storage.local.get([TOGGLE_KEY, BLACKLIST_KEY], (result) => {
   const isEnabled = result[TOGGLE_KEY] !== undefined ? result[TOGGLE_KEY] : DEFAULT_ENABLED;
   updateToggle(isEnabled);
+
+  const blockedCountries = result[BLACKLIST_KEY] || [];
+  blacklistInput.value = blockedCountries.join('\n');
+});
+
+// Save blacklist handler
+saveButton.addEventListener('click', () => {
+  const countries = blacklistInput.value
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.length > 0);
+  
+  chrome.storage.local.set({ [BLACKLIST_KEY]: countries }, () => {
+    // Show saved status
+    saveStatus.classList.add('visible');
+    setTimeout(() => {
+      saveStatus.classList.remove('visible');
+    }, 2000);
+
+    // Notify content script to update blacklist (optional, as content script can listen to storage changes)
+  });
 });
 
 // Toggle click handler
