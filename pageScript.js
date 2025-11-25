@@ -1,4 +1,3 @@
-// This script runs in the page context to access cookies and make API calls
 (function() {
   // Store headers from Twitter's own API calls
   let twitterHeaders = null;

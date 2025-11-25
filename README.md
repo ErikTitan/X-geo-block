@@ -7,9 +7,12 @@ A high-performance Chrome extension that displays country flag emojis next to Tw
 This fork significantly improves upon the original extension with advanced optimizations and blocking capabilities:
 
 ### 🚀 Performance & Optimization
-- **Smart Caching**: Caches user locations for **30 days** to minimize network requests. Cache is persistent across sessions.
+- **Hybrid Smart Caching**:
+  - **Instant Processing**: Cached users are processed instantly as you scroll, preventing visual jumps.
+  - **Debounced Fetching**: New users are processed with a slight delay (300ms) to ensure you are actively viewing the tweet, saving API calls.
+  - **Persistence**: Data is cached for 30 days.
 - **Dynamic Rate Limiting**: Automatically adjusts request speed. Starts aggressive (300ms) for instant flags, but backs off intelligently if Twitter limits are approached.
-- **Viewport-Aware Loading**: Only processes usernames currently visible on screen to prevent wasted API calls during fast scrolling.
+- **Smart Scroll Optimization**: Uses debouncing and viewport detection to only fetch data for tweets you actually stop to read, significantly reducing API calls during fast scrolling.
 - **Cache Management**: View cache size and manually clear it via the extension popup.
 
 ### 🛡️ Geo-Blocking

@@ -18,25 +18,54 @@ let rateLimitResetTime = 0; // Unix timestamp when rate limit resets
 // Observer for dynamically loaded content
 let observer = null;
 
-// Visibility observer to only process visible elements (saves API calls)
+// Visibility observer with debouncing to handle scroll speed
 const visibilityObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
+    const element = entry.target;
+    
     if (entry.isIntersecting) {
-      const element = entry.target;
-      // Stop observing once processed
-      visibilityObserver.unobserve(element);
-      
-      // Now process the element
+      // Optimistic check: If already cached, process immediately to avoid visual pop-in
       const screenName = extractUsername(element);
-      if (screenName) {
-        addFlagToUsername(element, screenName).catch(err => {
-          console.error(`Error processing ${screenName}:`, err);
-          element.dataset.flagAdded = 'failed';
-        });
+      if (screenName && locationCache.has(screenName)) {
+         visibilityObserver.unobserve(element);
+         // If there was a pending debounce, cancel it
+         if (element.dataset.debounceTimer) {
+            clearTimeout(parseInt(element.dataset.debounceTimer));
+            delete element.dataset.debounceTimer;
+         }
+         addFlagToUsername(element, screenName).catch(() => {});
+         return;
+      }
+
+      // Not cached? Debounce to ensure user stops/pauses on this element
+      if (!element.dataset.debounceTimer) {
+        const timer = setTimeout(() => {
+          // Double check visibility/existance
+          if (element.isConnected) {
+             // Process now
+             visibilityObserver.unobserve(element);
+             delete element.dataset.debounceTimer;
+             
+             const name = screenName || extractUsername(element);
+             if (name) {
+               addFlagToUsername(element, name).catch(err => {
+                 console.error(`Error processing ${name}:`, err);
+                 element.dataset.flagAdded = 'failed';
+               });
+             }
+          }
+        }, 300); // 300ms debounce
+        element.dataset.debounceTimer = timer;
+      }
+    } else {
+      // If scrolled away before timeout, cancel it
+      if (element.dataset.debounceTimer) {
+        clearTimeout(parseInt(element.dataset.debounceTimer));
+        delete element.dataset.debounceTimer;
       }
     }
   });
-}, { rootMargin: '300px' }); // Pre-fetch 300px before they enter viewport
+}, { rootMargin: '800px' }); // Expanded pre-fetch margin to process items before they scroll into view (if cached)
 
 // Extension enabled state
 let extensionEnabled = true;
@@ -254,7 +283,7 @@ async function processRequestQueue() {
       await new Promise(resolve => setTimeout(resolve, currentRequestInterval - timeSinceLastRequest));
     }
     
-    const { screenName, resolve, reject } = requestQueue.shift();
+    const { screenName, resolve, reject } = requestQueue.shift(); 
     activeRequests++;
     lastRequestTime = Date.now();
     
@@ -355,7 +384,8 @@ async function getUserLocation(screenName) {
   console.log(`Queueing API request for ${screenName}`);
   // Queue the request
   return new Promise((resolve, reject) => {
-    requestQueue.push({ screenName, resolve, reject });
+    // Add timestamp for priority queue handling
+    requestQueue.push({ screenName, resolve, reject, timestamp: Date.now() });
     processRequestQueue();
   });
 }
@@ -696,7 +726,7 @@ async function addFlagToUsername(usernameElement, screenName) {
         children.forEach(child => child.style.display = 'none');
         
         const messageContainer = document.createElement('div');
-        messageContainer.style.cssText = 'padding: 20px 16px; display: flex; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: transparent; border-bottom: 1px solid rgb(47, 51, 54); color: rgb(113, 118, 123); font-size: 15px;';
+        messageContainer.style.cssText = 'padding: 20px 16px; display: flex; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: transparent; color: rgb(113, 118, 123); font-size: 15px;';
         
         const textSpan = document.createElement('span');
         textSpan.textContent = `Post hidden because account is from ${location}`;
@@ -1013,10 +1043,16 @@ function removeAllFlags() {
   console.log('Removed all flags');
 }
 
+// Check if the current page is the home feed
+function isHomePage() {
+  const path = window.location.pathname;
+  return path === '/home' || path === '/';
+}
+
 // Function to process all username elements on the page
 async function processUsernames() {
-  // Check if extension is enabled
-  if (!extensionEnabled) {
+  // Check if extension is enabled and we are on the home page
+  if (!extensionEnabled || !isHomePage()) {
     return;
   }
   

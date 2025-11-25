@@ -1,4 +1,3 @@
-// Country name to flag emoji mapping
 const COUNTRY_FLAGS = {
   "Afghanistan": "🇦🇫",
   "Albania": "🇦🇱",

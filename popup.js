@@ -1,4 +1,3 @@
-// Popup script for extension toggle
 const TOGGLE_KEY = 'extension_enabled';
 const DEFAULT_ENABLED = true;
 
