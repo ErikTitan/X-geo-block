@@ -1,14 +1,29 @@
-# Twitter Account Location Flag Chrome Extension
+# Twitter Account Location Flag & Geo-Blocker
 
-A Chrome extension that displays country flag emojis next to Twitter/X usernames based on the account's location information.
+A high-performance Chrome extension that displays country flag emojis next to Twitter/X usernames based on the account's location information and allows you to block content from specific countries.
 
-## Features
+## New Features (v2.0)
+
+This fork significantly improves upon the original extension with advanced optimizations and blocking capabilities:
+
+### 🚀 Performance & Optimization
+- **Smart Caching**: Caches user locations for **30 days** to minimize network requests. Cache is persistent across sessions.
+- **Dynamic Rate Limiting**: Automatically adjusts request speed. Starts aggressive (300ms) for instant flags, but backs off intelligently if Twitter limits are approached.
+- **Viewport-Aware Loading**: Only processes usernames currently visible on screen to prevent wasted API calls during fast scrolling.
+- **Cache Management**: View cache size and manually clear it via the extension popup.
+
+### 🛡️ Geo-Blocking
+- **Country Blacklist**: Easily block posts from specific countries.
+- **One-Click Block**: Click the small `+` button next to any flag to add that country to your blacklist instantly.
+- **Content Hiding**: Posts from blacklisted countries are hidden with a "Show" button. You can re-hide them at any time.
+- **No Layout Shift**: Optimized to prevent visual glitches when hiding/showing posts.
+
+## Original Features
 
 - Automatically detects usernames on Twitter/X pages
-- Queries Twitter's GraphQL API to get account location information
+- Queries Twitter's GraphQL API (using secure page-context injection)
 - Displays the corresponding country flag emoji next to usernames
 - Works with dynamically loaded content (infinite scroll)
-- Caches location data to minimize API calls
 
 ## Installation
 
@@ -21,70 +36,36 @@ A Chrome extension that displays country flag emojis next to Twitter/X usernames
 
 ## How It Works
 
-1. The extension runs a content script on all Twitter/X pages
-2. It identifies username elements in tweets and user profiles
-3. For each username, it queries Twitter's GraphQL API endpoint (`AboutAccountQuery`) to get the account's location
-4. The location is mapped to a flag emoji using the country flags mapping
-5. The flag emoji is displayed next to the username
+1. The extension runs a content script on all Twitter/X pages.
+2. It identifies username elements in tweets and user profiles.
+3. **Check Cache**: It first checks the local cache (valid for 30 days).
+4. **API Request**: If not cached, it queries Twitter's GraphQL API endpoint (`AboutAccountQuery`) using a page script to ensure authentication.
+5. **Rate Limiting**: Requests are queued and rate-limited to avoid hitting Twitter's API limits.
+6. The location is mapped to a flag emoji using the country flags mapping.
+7. The flag emoji is displayed next to the username, along with a block button.
 
 ## Files
 
 - `manifest.json` - Chrome extension configuration
-- `content.js` - Main content script that processes the page and injects page scripts for API calls
+- `content.js` - Main content script (UI injection, caching, rate limiting)
+- `popup.html` / `popup.js` - Extension popup for settings and cache management
 - `countryFlags.js` - Country name to flag emoji mapping
 - `README.md` - This file
 
 ## Technical Details
 
-The extension uses a page script injection approach to make API requests. This allows it to:
-- Access the same cookies and authentication as the logged-in user
-- Make same-origin requests to Twitter's API without CORS issues
-- Work seamlessly with Twitter's authentication system
-
-The content script injects a script into the page context that listens for location fetch requests. When a username is detected, the content script sends a custom event to the page script, which makes the API request and returns the location data.
-
-## API Endpoint
-
-The extension uses Twitter's GraphQL API endpoint:
-```
-https://x.com/i/api/graphql/XRqGa7EeokUU5kppkh13EA/AboutAccountQuery
-```
-
-With variables:
-```json
-{
-  "screenName": "username"
-}
-```
-
-The response contains `account_based_in` field in:
-```
-data.user_result_by_screen_name.result.about_profile.account_based_in
-```
-
-## Limitations
-
-- Requires the user to be logged into Twitter/X
-- Only works for accounts that have location information available
-- Country names must match the mapping in `countryFlags.js` (case-insensitive)
-- Rate limiting may apply if making too many requests
+The extension uses **Page Script Injection** to make API requests. This allows it to:
+- Access the same cookies and authentication as the logged-in user.
+- Make same-origin requests to Twitter's API without CORS issues.
+- Work seamlessly with Twitter's authentication system.
 
 ## Privacy
 
 - The extension only queries public account information
 - No data is stored or transmitted to third-party servers
 - All API requests are made directly to Twitter/X servers
-- Location data is cached locally in memory
-
-## Troubleshooting
-
-If flags are not appearing:
-1. Make sure you're logged into Twitter/X
-2. Check the browser console for any error messages
-3. Verify that the account has location information available
-4. Try refreshing the page
+- Location data is cached locally in your browser
 
 ## License
 
 MIT
-

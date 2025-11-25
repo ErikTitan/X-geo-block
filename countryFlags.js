@@ -60,7 +60,8 @@ const COUNTRY_FLAGS = {
   "United Kingdom": "🇬🇧",
   "United States": "🇺🇸",
   "Venezuela": "🇻🇪",
-  "Vietnam": "🇻🇳"
+  "Vietnam": "🇻🇳",
+  "Jordan": "🇯🇴",
 };
 
 function getCountryFlag(countryName) {

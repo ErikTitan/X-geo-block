@@ -8,16 +8,47 @@ const status = document.getElementById('status');
 const blacklistInput = document.getElementById('blacklist');
 const saveButton = document.getElementById('saveButton');
 const saveStatus = document.getElementById('saveStatus');
+const cacheStats = document.getElementById('cacheStats');
+const clearCacheButton = document.getElementById('clearCacheButton');
 
 const BLACKLIST_KEY = 'blocked_countries';
+const CACHE_KEY = 'twitter_location_cache';
 
 // Load current state
-chrome.storage.local.get([TOGGLE_KEY, BLACKLIST_KEY], (result) => {
+chrome.storage.local.get([TOGGLE_KEY, BLACKLIST_KEY, CACHE_KEY], (result) => {
   const isEnabled = result[TOGGLE_KEY] !== undefined ? result[TOGGLE_KEY] : DEFAULT_ENABLED;
   updateToggle(isEnabled);
 
   const blockedCountries = result[BLACKLIST_KEY] || [];
   blacklistInput.value = blockedCountries.join('\n');
+
+  // Cache stats
+  const cache = result[CACHE_KEY] || {};
+  const cacheSize = Object.keys(cache).length;
+  
+  // Calculate size in KB/MB
+  const jsonString = JSON.stringify(cache);
+  const bytes = new Blob([jsonString]).size;
+  const sizeStr = bytes > 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+    : `${(bytes / 1024).toFixed(2)} KB`;
+    
+  cacheStats.textContent = `${cacheSize} users cached (${sizeStr})`;
+});
+
+// Clear cache handler
+clearCacheButton.addEventListener('click', () => {
+  if (confirm('Are you sure you want to clear the location cache?')) {
+    chrome.storage.local.remove(CACHE_KEY, () => {
+      cacheStats.textContent = '0 users cached (0.00 KB)';
+      // Notify content script to clear its in-memory cache too
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]) {
+          chrome.tabs.sendMessage(tabs[0].id, { type: 'clearCache' });
+        }
+      });
+    });
+  }
 });
 
 // Save blacklist handler

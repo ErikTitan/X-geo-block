@@ -7,13 +7,36 @@ const CACHE_EXPIRY_DAYS = 30; // Cache for 30 days
 const requestQueue = [];
 let isProcessingQueue = false;
 let lastRequestTime = 0;
-const MIN_REQUEST_INTERVAL = 2000; // 2 seconds between requests (increased to avoid rate limits)
-const MAX_CONCURRENT_REQUESTS = 2; // Reduced concurrent requests
+// Dynamic Rate Limiting
+const INITIAL_REQUEST_INTERVAL = 300; // Start fast (300ms)
+let currentRequestInterval = INITIAL_REQUEST_INTERVAL;
+const MAX_REQUEST_INTERVAL = 10000; // Max backoff to 10s
+const MAX_CONCURRENT_REQUESTS = 2;
 let activeRequests = 0;
 let rateLimitResetTime = 0; // Unix timestamp when rate limit resets
 
 // Observer for dynamically loaded content
 let observer = null;
+
+// Visibility observer to only process visible elements (saves API calls)
+const visibilityObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const element = entry.target;
+      // Stop observing once processed
+      visibilityObserver.unobserve(element);
+      
+      // Now process the element
+      const screenName = extractUsername(element);
+      if (screenName) {
+        addFlagToUsername(element, screenName).catch(err => {
+          console.error(`Error processing ${screenName}:`, err);
+          element.dataset.flagAdded = 'failed';
+        });
+      }
+    }
+  });
+}, { rootMargin: '300px' }); // Pre-fetch 300px before they enter viewport
 
 // Extension enabled state
 let extensionEnabled = true;
@@ -55,6 +78,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // Remove all flags if disabled
       removeAllFlags();
     }
+  } else if (request.type === 'clearCache') {
+    console.log('Clearing location cache...');
+    locationCache.clear();
+    saveCache(); // Save empty cache
   }
 });
 
@@ -85,8 +112,17 @@ async function loadCache() {
       
       // Filter out expired entries and null entries (allow retry)
       for (const [username, data] of Object.entries(cached)) {
-        if (data.expiry && data.expiry > now && data.location !== null) {
-          locationCache.set(username, data.location);
+        // Handle legacy format where cache might store string or incomplete object
+        if (typeof data === 'string') {
+          // Legacy string format - upgrade it
+          locationCache.set(username, {
+            location: data,
+            expiry: now + (CACHE_EXPIRY_DAYS * 24 * 60 * 60 * 1000),
+            cachedAt: now
+          });
+        } else if (data.expiry && data.expiry > now && data.location !== null) {
+          // Valid object format
+          locationCache.set(username, data);
         }
       }
       console.log(`Loaded ${locationCache.size} cached locations (excluding null entries)`);
@@ -113,14 +149,20 @@ async function saveCache() {
     
     const cacheObj = {};
     const now = Date.now();
-    const expiry = now + (CACHE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+    const defaultExpiry = now + (CACHE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
     
-    for (const [username, location] of locationCache.entries()) {
-      cacheObj[username] = {
-        location: location,
-        expiry: expiry,
-        cachedAt: now
-      };
+    for (const [username, data] of locationCache.entries()) {
+      // Ensure we have a valid object structure
+      if (typeof data === 'object' && data !== null && data.location) {
+        cacheObj[username] = data;
+      } else if (typeof data === 'string') {
+        // Fix any string entries that might have slipped in
+        cacheObj[username] = {
+          location: data,
+          expiry: defaultExpiry,
+          cachedAt: now
+        };
+      }
     }
     
     await chrome.storage.local.set({ [CACHE_KEY]: cacheObj });
@@ -143,7 +185,15 @@ async function saveCacheEntry(username, location) {
     return;
   }
   
-  locationCache.set(username, location);
+  const now = Date.now();
+  const entry = {
+    location: location,
+    expiry: now + (CACHE_EXPIRY_DAYS * 24 * 60 * 60 * 1000),
+    cachedAt: now
+  };
+
+  locationCache.set(username, entry);
+  
   // Debounce saves - only save every 5 seconds
   if (!saveCache.timeout) {
     saveCache.timeout = setTimeout(async () => {
@@ -199,9 +249,9 @@ async function processRequestQueue() {
     const now = Date.now();
     const timeSinceLastRequest = now - lastRequestTime;
     
-    // Wait if needed to respect rate limit
-    if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
-      await new Promise(resolve => setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest));
+    // Wait if needed to respect dynamic rate limit
+    if (timeSinceLastRequest < currentRequestInterval) {
+      await new Promise(resolve => setTimeout(resolve, currentRequestInterval - timeSinceLastRequest));
     }
     
     const { screenName, resolve, reject } = requestQueue.shift();
@@ -247,8 +297,17 @@ function makeLocationRequest(screenName) {
         // Only cache if not rate limited (don't cache failures due to rate limiting)
         if (!isRateLimited) {
           saveCacheEntry(screenName, location || null);
+          
+          // Successful request, slowly decrease interval if it's high
+          if (currentRequestInterval > INITIAL_REQUEST_INTERVAL) {
+             currentRequestInterval = Math.max(INITIAL_REQUEST_INTERVAL, currentRequestInterval - 100);
+             console.log(`Decreasing request interval to ${currentRequestInterval}ms`);
+          }
         } else {
           console.log(`Not caching null for ${screenName} due to rate limit`);
+          // Rate limited! Increase interval significantly
+          currentRequestInterval = Math.min(MAX_REQUEST_INTERVAL, currentRequestInterval * 2);
+          console.log(`Rate limited (soft)! Increasing request interval to ${currentRequestInterval}ms`);
         }
         
         resolve(location || null);
@@ -278,10 +337,14 @@ async function getUserLocation(screenName) {
   // Check cache first
   if (locationCache.has(screenName)) {
     const cached = locationCache.get(screenName);
+    
+    // Handle object structure
+    const location = (typeof cached === 'object' && cached !== null) ? cached.location : cached;
+
     // Don't return cached null - retry if it was null before (might have been rate limited)
-    if (cached !== null) {
-      console.log(`Using cached location for ${screenName}: ${cached}`);
-      return cached;
+    if (location !== null) {
+      console.log(`Using cached location for ${screenName}: ${location}`);
+      return location;
     } else {
       console.log(`Found null in cache for ${screenName}, will retry API call`);
       // Remove from cache to allow retry
@@ -448,6 +511,92 @@ function createLoadingShimmer() {
   return shimmer;
 }
 
+// Create a hide button to re-hide the post
+function addHideButton(tweetContainer, messageContainer, children) {
+  // Check if hide button already exists
+  if (tweetContainer.querySelector('[data-twitter-hide-btn]')) return;
+
+  const hideButton = document.createElement('button');
+  hideButton.textContent = 'Hide';
+  hideButton.setAttribute('data-twitter-hide-btn', 'true');
+  hideButton.style.cssText = 'background-color: transparent; border: 1px solid rgb(83, 100, 113); color: rgb(83, 100, 113); font-weight: 600; border-radius: 9999px; padding: 2px 10px; cursor: pointer; font-size: 12px; margin-left: 8px; transition: all 0.2s;';
+  
+  hideButton.onmouseover = () => {
+    hideButton.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
+    hideButton.style.color = 'rgb(239, 68, 68)';
+    hideButton.style.borderColor = 'rgb(239, 68, 68)';
+  };
+  hideButton.onmouseout = () => {
+    hideButton.style.backgroundColor = 'transparent';
+    hideButton.style.color = 'rgb(83, 100, 113)';
+    hideButton.style.borderColor = 'rgb(83, 100, 113)';
+  };
+  
+  hideButton.onclick = (e) => {
+    e.stopPropagation();
+    messageContainer.style.display = 'flex';
+    children.forEach(child => child.style.display = 'none');
+    hideButton.remove();
+  };
+
+  // Find a good place to insert - ideally near the timestamp or "More" button
+  // We'll look for the User-Name container first
+  const userNameContainer = tweetContainer.querySelector('[data-testid="User-Name"]');
+  if (userNameContainer) {
+    // Try to append to the end of the user name row
+    userNameContainer.appendChild(hideButton);
+  } else {
+    // Fallback - just prepend to the first visible child
+    const firstChild = children.find(c => c.style.display !== 'none');
+    if (firstChild) {
+      firstChild.insertBefore(hideButton, firstChild.firstChild);
+    }
+  }
+}
+
+// Create blacklist toggle button
+function createBlacklistButton(screenName, location) {
+  const btn = document.createElement('button');
+  btn.innerHTML = '+'; // Simple plus for now, could be an SVG
+  btn.title = `Add ${location} to blacklist`;
+  btn.style.cssText = 'background-color: transparent; border: 1px solid rgba(113, 118, 123, 0.5); color: rgb(113, 118, 123); width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; margin-left: 6px; font-size: 12px; line-height: 1; vertical-align: middle; padding: 0; transition: all 0.2s;';
+  
+  btn.onmouseover = () => {
+    btn.style.backgroundColor = 'rgba(244, 33, 46, 0.1)';
+    btn.style.color = 'rgb(244, 33, 46)';
+    btn.style.borderColor = 'rgb(244, 33, 46)';
+  };
+  
+  btn.onmouseout = () => {
+    btn.style.backgroundColor = 'transparent';
+    btn.style.color = 'rgb(113, 118, 123)';
+    btn.style.borderColor = 'rgba(113, 118, 123, 0.5)';
+  };
+  
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    
+    // Confirm blocking
+    if (confirm(`Block all posts from ${location}?`)) {
+      // Add to blacklist
+      chrome.storage.local.get(BLACKLIST_KEY, (result) => {
+        const currentList = result[BLACKLIST_KEY] || [];
+        if (!currentList.includes(location)) {
+          const newList = [...currentList, location];
+          chrome.storage.local.set({ [BLACKLIST_KEY]: newList }, () => {
+            console.log(`Added ${location} to blacklist`);
+            // Trigger reprocessing will happen via storage listener
+          });
+        }
+      });
+    }
+  };
+  
+  return btn;
+}
+
+
 // Function to add flag to username element
 async function addFlagToUsername(usernameElement, screenName) {
   // Check if flag already added
@@ -535,12 +684,19 @@ async function addFlagToUsername(usernameElement, screenName) {
       // Find the tweet container
       const tweetContainer = usernameElement.closest('article[data-testid="tweet"]');
       if (tweetContainer) {
+        // Check if already blocked to prevent double-hiding (nested overlays)
+        if (tweetContainer.hasAttribute('data-twitter-blocked')) {
+            console.log('Tweet already blocked, skipping duplicate block');
+            usernameElement.dataset.flagAdded = 'blocked';
+            return;
+        }
+
         // Hide children instead of clearing
         const children = Array.from(tweetContainer.children);
         children.forEach(child => child.style.display = 'none');
         
         const messageContainer = document.createElement('div');
-        messageContainer.style.cssText = 'padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: transparent; border-bottom: 1px solid rgb(47, 51, 54); color: rgb(113, 118, 123); font-size: 15px;';
+        messageContainer.style.cssText = 'padding: 20px 16px; display: flex; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: transparent; border-bottom: 1px solid rgb(47, 51, 54); color: rgb(113, 118, 123); font-size: 15px;';
         
         const textSpan = document.createElement('span');
         textSpan.textContent = `Post hidden because account is from ${location}`;
@@ -554,8 +710,11 @@ async function addFlagToUsername(usernameElement, screenName) {
         
         showButton.onclick = (e) => {
             e.stopPropagation(); // Prevent clicking the tweet
-            messageContainer.remove();
+            messageContainer.style.display = 'none'; // Don't remove, just hide
             children.forEach(child => child.style.display = '');
+            
+            // Add a "Hide" button to the tweet header if not already present
+            addHideButton(tweetContainer, messageContainer, children);
         };
         
         messageContainer.appendChild(textSpan);
@@ -565,6 +724,7 @@ async function addFlagToUsername(usernameElement, screenName) {
         
         // Mark as blocked to avoid re-processing
         usernameElement.dataset.flagAdded = 'blocked';
+        tweetContainer.setAttribute('data-twitter-blocked', 'true');
         
         // Remove shimmer if it was inserted
         if (shimmerInserted && shimmerSpan.parentNode) {
@@ -791,6 +951,17 @@ async function addFlagToUsername(usernameElement, screenName) {
       // Mark as processed
       usernameElement.dataset.flagAdded = 'true';
       console.log(`✓ Successfully added flag ${flag} for ${screenName} (${location})`);
+
+      // Insert Blacklist Button
+      try {
+        const insertedFlag = usernameElement.querySelector('[data-twitter-flag]');
+        if (insertedFlag && insertedFlag.parentNode) {
+            const blacklistBtn = createBlacklistButton(screenName, location);
+            insertedFlag.parentNode.insertBefore(blacklistBtn, insertedFlag.nextSibling);
+        }
+      } catch (e) {
+          console.error('Error adding blacklist button:', e);
+      }
       
       // Also mark any other containers waiting for this username
       const waitingContainers = document.querySelectorAll(`[data-flag-added="waiting"]`);
@@ -859,26 +1030,31 @@ async function processUsernames() {
   let skippedCount = 0;
   
   for (const container of containers) {
-    const screenName = extractUsername(container);
-    if (screenName) {
+    // Skip if already processed or failed
+    const status = container.dataset.flagAdded;
+    if (status && status !== 'failed') {
+      skippedCount++;
+      continue;
+    }
+
+    // Skip if already observing
+    if (container.dataset.observed === 'true') {
+      continue;
+    }
+
+    // Check if it has a username structure before observing (optimization)
+    // We don't extract the full username yet to save performance
+    const hasUserName = container.querySelector('[data-testid="UserName"], [data-testid="User-Name"]');
+    
+    if (hasUserName || container.tagName === 'ARTICLE') {
       foundCount++;
-      const status = container.dataset.flagAdded;
-      if (!status || status === 'failed') {
-        processedCount++;
-        // Process in parallel but limit concurrency
-        addFlagToUsername(container, screenName).catch(err => {
-          console.error(`Error processing ${screenName}:`, err);
-          container.dataset.flagAdded = 'failed';
-        });
-      } else {
-        skippedCount++;
-      }
-    } else {
-      // Debug: log containers that don't have usernames
-      const hasUserName = container.querySelector('[data-testid="UserName"], [data-testid="User-Name"]');
-      if (hasUserName) {
-        console.log('Found UserName container but no username extracted');
-      }
+      processedCount++;
+      
+      // Mark as observed
+      container.dataset.observed = 'true';
+      
+      // Add to visibility observer
+      visibilityObserver.observe(container);
     }
   }
   

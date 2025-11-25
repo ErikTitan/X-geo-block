@@ -1,8 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Twitter Account Location Flag",
-  "version": "1.0.0",
-  "description": "Shows country flag emoji next to Twitter usernames based on account location",
+  "name": "Twitter Account Location Flag & Geo-Blocker",
+  "version": "2.0.0",
+  "description": "Displays country flags next to Twitter/X usernames and allows blocking content from specific countries.",
+  "icons": {
+    "16": "icon.svg",
+    "48": "icon.svg",
+    "128": "icon.svg"
+  },
   "permissions": [
     "activeTab",
     "storage",
@@ -10,7 +15,8 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Twitter Location Flag"
+    "default_title": "Twitter Location Flag",
+    "default_icon": "icon.svg"
   },
   "host_permissions": [
     "https://x.com/*",
