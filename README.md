@@ -1,6 +1,6 @@
 # Twitter Account Location Flag & Geo-Blocker
 
-A high-performance Chrome extension that displays country flag emojis next to Twitter/X usernames based on the account's location information and allows you to block content from specific countries.
+A high-performance Chrome extension that displays country flag emojis next to Twitter/X usernames on the homepage based on the account's location information and allows you to block content from specific countries.
 
 ## New Features (v2.0)
 
@@ -9,7 +9,7 @@ This fork significantly improves upon the original extension with advanced optim
 ### 🚀 Performance & Optimization
 - **Hybrid Smart Caching**:
   - **Instant Processing**: Cached users are processed instantly as you scroll, preventing visual jumps.
-  - **Debounced Fetching**: New users are processed with a slight delay (300ms) to ensure you are actively viewing the tweet, saving API calls.
+  - **Debounced Fetching**: New users are processed with a slight delay (2000ms) to ensure you are actively viewing the tweet, saving API calls.
   - **Persistence**: Data is cached for 30 days.
 - **Dynamic Rate Limiting**: Automatically adjusts request speed. Starts aggressive (300ms) for instant flags, but backs off intelligently if Twitter limits are approached.
 - **Smart Scroll Optimization**: Uses debouncing and viewport detection to only fetch data for tweets you actually stop to read, significantly reducing API calls during fast scrolling.

@@ -4,9 +4,9 @@
   "version": "2.0.0",
   "description": "Displays country flags next to Twitter/X usernames and allows blocking content from specific countries.",
   "icons": {
-    "16": "icon.svg",
-    "48": "icon.svg",
-    "128": "icon.svg"
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
   },
   "permissions": [
     "activeTab",
@@ -16,7 +16,7 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "Twitter Location Flag",
-    "default_icon": "icon.svg"
+    "default_icon": "icon.png"
   },
   "host_permissions": [
     "https://x.com/*",

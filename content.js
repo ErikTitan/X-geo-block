@@ -54,7 +54,7 @@ const visibilityObserver = new IntersectionObserver((entries) => {
                });
              }
           }
-        }, 300); // 300ms debounce
+        }, 2000); // 2000ms debounce
         element.dataset.debounceTimer = timer;
       }
     } else {
@@ -247,9 +247,88 @@ function injectPageScript() {
     if (event.data && event.data.type === '__rateLimitInfo') {
       rateLimitResetTime = event.data.resetTime;
       const waitTime = event.data.waitTime;
-      console.log(`Rate limit detected. Will resume requests in ${Math.ceil(waitTime / 1000 / 60)} minutes`);
+      const minutes = Math.ceil(waitTime / 1000 / 60);
+      console.log(`Rate limit detected. Will resume requests in ${minutes} minutes`);
+      
+      // Show notification
+      showRateLimitToast(minutes);
     }
   });
+}
+
+// Show a discreet toast notification for rate limits
+function showRateLimitToast(minutes) {
+  // Don't show if already visible
+  if (document.getElementById('twitter-location-rate-limit-toast')) return;
+
+  const toast = document.createElement('div');
+  toast.id = 'twitter-location-rate-limit-toast';
+  toast.style.cssText = `
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background-color: rgba(29, 155, 240, 0.9); /* Twitter Blue */
+    color: white;
+    padding: 12px 20px;
+    border-radius: 9999px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    animation: slideIn 0.3s ease-out;
+    pointer-events: auto;
+    max-width: 300px;
+  `;
+  
+  // Add animation keyframes if needed
+  if (!document.getElementById('toast-animation-style')) {
+    const style = document.createElement('style');
+    style.id = 'toast-animation-style';
+    style.textContent = `
+      @keyframes slideIn {
+        from { transform: translateY(20px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  const message = minutes > 1
+    ? `Extension paused for ~${minutes} mins due to Twitter limits`
+    : `Extension paused momentarily due to Twitter limits`;
+
+  const iconUrl = chrome.runtime.getURL('icon.png');
+
+  toast.innerHTML = `
+    <img src="${iconUrl}" style="width: 20px; height: 20px; border-radius: 4px;" alt="Logo" />
+    <span>${message}</span>
+    <button style="background: none; border: none; color: white; cursor: pointer; padding: 4px; display: flex; align-items: center; justify-content: center; opacity: 0.8; font-size: 18px;">&times;</button>
+  `;
+
+  // Close button handler
+  toast.querySelector('button').onclick = () => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(10px)';
+    toast.style.transition = 'all 0.2s';
+    setTimeout(() => toast.remove(), 200);
+  };
+
+  document.body.appendChild(toast);
+}
+
+// Hide the rate limit toast
+function hideRateLimitToast() {
+  const toast = document.getElementById('twitter-location-rate-limit-toast');
+  if (toast) {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(10px)';
+    toast.style.transition = 'all 0.2s';
+    setTimeout(() => toast.remove(), 200);
+  }
 }
 
 // Process request queue with rate limiting
@@ -269,6 +348,8 @@ async function processRequestQueue() {
     } else {
       // Rate limit expired, reset
       rateLimitResetTime = 0;
+      // Hide the warning toast if it's visible
+      hideRateLimitToast();
     }
   }
   
@@ -370,15 +451,7 @@ async function getUserLocation(screenName) {
     // Handle object structure
     const location = (typeof cached === 'object' && cached !== null) ? cached.location : cached;
 
-    // Don't return cached null - retry if it was null before (might have been rate limited)
-    if (location !== null) {
-      console.log(`Using cached location for ${screenName}: ${location}`);
-      return location;
-    } else {
-      console.log(`Found null in cache for ${screenName}, will retry API call`);
-      // Remove from cache to allow retry
-      locationCache.delete(screenName);
-    }
+    return location;
   }
   
   console.log(`Queueing API request for ${screenName}`);
